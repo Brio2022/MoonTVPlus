@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { useSite } from '@/components/SiteProvider';
+
 const tabs = [
   { href: '/books', label: '发现', icon: Library },
   { href: '/books/search', label: '搜索', icon: Search },
@@ -30,6 +32,7 @@ function getStaticMeta(pathname: string) {
 export default function BooksLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { siteName } = useSite();
   const isRead = pathname === '/books/read';
   const [readHeader, setReadHeader] = useState<ReadHeaderPayload | null>(null);
   const [readMenuOpen, setReadMenuOpen] = useState(false);
@@ -92,7 +95,7 @@ export default function BooksLayout({ children }: { children: React.ReactNode })
               <ChevronLeft className='h-5 w-5' />
             </Link>
           ) : (
-            <Link href='/' className='text-sm font-semibold text-sky-600'>MoonTV+</Link>
+            <Link href='/' className='text-sm font-semibold text-sky-600'>{siteName}</Link>
           )}
           <div className='min-w-0 flex-1'>
             <div className='group relative'>
