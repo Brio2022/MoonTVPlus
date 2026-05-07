@@ -72,7 +72,7 @@ export async function checkCMCC(link) {
     );
 
     if (statusCode !== 200) {
-      return { valid: false, reason: `API返回错误状态码: ${statusCode}` };
+      return { valid: false, reason: `API返回错误状态码: ${statusCode}, 响应: ${body}` };
     }
 
     const response = JSON.parse(aesCBCDecrypt(body.trim(), CMCC_AES_KEY));

@@ -19,7 +19,6 @@ export function request(url, options = {}) {
     const transport = parsedUrl.protocol === 'https:' ? https : http;
 
     const headers = { ...DEFAULT_HEADERS, ...(options.headers || {}) };
-    delete headers['Content-Type'];
 
     const reqOptions = {
       hostname: parsedUrl.hostname,
@@ -47,7 +46,9 @@ export function request(url, options = {}) {
 
     if (options.body) {
       if (typeof options.body === 'object') {
-        req.setHeader('Content-Type', 'application/json');
+        if (!req.hasHeader('Content-Type')) {
+          req.setHeader('Content-Type', 'application/json');
+        }
         req.write(JSON.stringify(options.body));
       } else {
         req.write(options.body);
