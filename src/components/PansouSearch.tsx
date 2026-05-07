@@ -332,7 +332,7 @@ export default function PansouSearch({
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || '立即播放失败');
+        throw new Error(data.error || '播放失败');
       }
 
       router.push(
@@ -340,7 +340,7 @@ export default function PansouSearch({
       );
     } catch (err: any) {
       setToast({
-        message: err?.message || '立即播放失败',
+        message: err?.message || '播放失败',
         type: 'error',
         onClose: () => setToast(null),
       });
@@ -424,6 +424,24 @@ export default function PansouSearch({
   const getCheckResultForUrl = (cloudType: string, url: string) => {
     const task = getCloudCheckState(cloudType);
     return task?.results?.[url] || null;
+  };
+
+  const getSortedLinks = (cloudType: string, links: PansouLink[]) => {
+    return links
+      .map((link, index) => ({
+        link,
+        index,
+        checkResult: getCheckResultForUrl(cloudType, link.url),
+      }))
+      .sort((a, b) => {
+        const aInvalid = a.checkResult?.status === 'invalid' ? 1 : 0;
+        const bInvalid = b.checkResult?.status === 'invalid' ? 1 : 0;
+        if (aInvalid !== bInvalid) {
+          return aInvalid - bInvalid;
+        }
+        return a.index - b.index;
+      })
+      .map(({ link }) => link);
   };
 
   const renderBody = () => {
@@ -526,6 +544,7 @@ export default function PansouSearch({
         {filteredCloudTypes.map((cloudType) => {
           const links = results.merged_by_type?.[cloudType];
           if (!links || links.length === 0) return null;
+          const sortedLinks = getSortedLinks(cloudType, links);
 
           const typeName = CLOUD_TYPE_NAMES[cloudType] || cloudType;
           const typeColor = CLOUD_TYPE_COLORS[cloudType] || CLOUD_TYPE_COLORS.others;
@@ -581,7 +600,7 @@ export default function PansouSearch({
 
               {/* 链接列表 */}
               <div className='space-y-2'>
-                {links.map((link: PansouLink, index: number) => (
+                {sortedLinks.map((link: PansouLink, index: number) => (
                   <div
                     key={`${cloudType}-${index}`}
                     className='p-4 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:border-green-400 dark:hover:border-green-600 transition-colors'
@@ -626,9 +645,9 @@ export default function PansouSearch({
                               onClick={() => handleNetdiskInstantPlay(cloudType, link)}
                               disabled={playingUrl === link.url}
                               className='px-2 py-1 rounded-md bg-green-600 hover:bg-green-700 text-white text-xs transition-colors disabled:opacity-60'
-                              title='立即播放'
+                              title='播放'
                             >
-                              {playingUrl === link.url ? '处理中...' : '立即播放'}
+                              {playingUrl === link.url ? '处理中...' : '播放'}
                             </button>
                             {cloudType === 'quark' && (
                               <button
