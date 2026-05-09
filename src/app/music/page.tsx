@@ -8,6 +8,10 @@ import AddToPlaylistModal from '@/components/AddToPlaylistModal';
 import Toast, { ToastProps } from '@/components/Toast';
 import LyricsPiPWindow from '@/components/LyricsPiPWindow';
 
+const SPECTRUM_BIN_COUNT = 96;
+const SPECTRUM_IDLE_LEVEL = 0.02;
+const SPECTRUM_EDGE_TRIM = 8;
+
 type MusicSource = 'wy' | 'tx' | 'kw' | 'kg' | 'mg';
 
 interface Song {
@@ -88,6 +92,90 @@ function MusicLoadingIndicator({
         ))}
       </div>
       {text ? <span className={`${textSize} font-medium tracking-wide`}>{text}</span> : null}
+    </div>
+  );
+}
+
+function AudioSpectrumCanvas({
+  bars,
+  compact = false,
+}: {
+  bars: number[];
+  compact?: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const draw = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.round(rect.width * dpr);
+      const height = Math.round(rect.height * dpr);
+
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.clearRect(0, 0, width, height);
+
+      const targetPitch = compact ? 4.2 : 4.6;
+      const gap = 1;
+      const count = Math.max(1, Math.floor(rect.width / targetPitch));
+      const barWidth = Math.max(2, Math.floor((width - gap * (count - 1)) / count));
+      const cubeHeight = compact ? Math.max(2, Math.round(2 * dpr)) : Math.max(2, Math.round(2.5 * dpr));
+      const cubeGap = 1;
+      const scaleBase = compact ? height * 1.55 : height * 1.42;
+      const themeColor = '#10b981';
+
+      const sampleBar = (index: number) => {
+        const usableLength = Math.max(1, bars.length - SPECTRUM_EDGE_TRIM * 2);
+        const mappedStart = SPECTRUM_EDGE_TRIM + Math.floor((index / count) * usableLength);
+        const start = Math.min(bars.length - 1, mappedStart);
+        const mappedEnd = SPECTRUM_EDGE_TRIM + Math.max(mappedStart + 1, Math.floor(((index + 1) / count) * usableLength));
+        const end = Math.min(bars.length, Math.max(start + 1, mappedEnd));
+        let total = 0;
+        for (let i = start; i < end; i++) total += bars[i] ?? 0;
+        return total / Math.max(1, end - start);
+      };
+
+      ctx.fillStyle = themeColor;
+      ctx.strokeStyle = themeColor;
+
+      for (let i = 0; i < count; i++) {
+        const q = Math.max(SPECTRUM_IDLE_LEVEL, sampleBar(i)) * scaleBase;
+        const cubeCount = Math.max(1, Math.ceil(q / Math.max(1, barWidth * 0.9)));
+        const x = i * (barWidth + gap);
+
+        for (let segment = 0; segment < cubeCount; segment++) {
+          const y = height - segment * (cubeHeight + cubeGap);
+          ctx.beginPath();
+          ctx.roundRect(x, y - cubeHeight, barWidth, cubeHeight, Math.min(2 * dpr, cubeHeight / 2));
+          ctx.fill();
+        }
+      }
+    };
+
+    draw();
+    const observer = new ResizeObserver(draw);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [bars, compact]);
+
+  return (
+    <div
+      className={`relative overflow-hidden ${compact ? 'h-6' : 'h-8'}`}
+      aria-hidden="true"
+    >
+      <canvas ref={canvasRef} className="absolute inset-0 h-full w-full opacity-50" />
     </div>
   );
 }
@@ -176,12 +264,26 @@ export default function MusicPage() {
   const [showPiPLyrics, setShowPiPLyrics] = useState(false);
   const [pipOpacity, setPipOpacity] = useState(0.9);
   const [pipMinimized, setPipMinimized] = useState(false);
+  const [showSpectrum, setShowSpectrum] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    return localStorage.getItem('musicShowSpectrum') !== '0';
+  });
+  const [spectrumBars, setSpectrumBars] = useState<number[]>(
+    () => Array.from({ length: SPECTRUM_BIN_COUNT }, () => SPECTRUM_IDLE_LEVEL)
+  );
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const lyricsContainerRef = useRef<HTMLDivElement>(null);
   const lastSaveTimeRef = useRef<number>(0);
   const restoredTimeRef = useRef<number>(0);
   const songStartTimeRef = useRef<number>(0); // 歌曲开始播放的时间戳
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const mediaSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const spectrumDataRef = useRef<Uint8Array | null>(null);
+  const spectrumFrameRef = useRef<number | null>(null);
+  const currentTimeRef = useRef(0);
+  const spectrumSeedRef = useRef(Math.random() * Math.PI * 2);
 
   const mapSong = (song: any): Song => ({
     id: song.songId || song.id,
@@ -1502,6 +1604,15 @@ export default function MusicPage() {
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
+  const toggleSpectrum = () => {
+    setShowSpectrum(prev => !prev);
+  };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('musicShowSpectrum', showSpectrum ? '1' : '0');
+  }, [showSpectrum]);
+
   const getQualityLabel = () => {
     switch (quality) {
       case '128k': return '标准';
@@ -1527,6 +1638,123 @@ export default function MusicPage() {
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
+
+  useEffect(() => {
+    currentTimeRef.current = currentTime;
+  }, [currentTime]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || typeof window === 'undefined') return;
+
+    let cancelled = false;
+
+    const ensureAnalyser = async () => {
+      try {
+        const AudioContextClass = window.AudioContext || (window as typeof window & {
+          webkitAudioContext?: typeof AudioContext;
+        }).webkitAudioContext;
+
+        if (!AudioContextClass) return;
+
+        if (!audioContextRef.current) {
+          audioContextRef.current = new AudioContextClass();
+        }
+
+        if (!mediaSourceRef.current) {
+          mediaSourceRef.current = audioContextRef.current.createMediaElementSource(audio);
+        }
+
+        if (!analyserRef.current) {
+          const analyser = audioContextRef.current.createAnalyser();
+          analyser.fftSize = 512;
+          analyser.smoothingTimeConstant = 0.8;
+          mediaSourceRef.current.connect(analyser);
+          analyser.connect(audioContextRef.current.destination);
+          analyserRef.current = analyser;
+          spectrumDataRef.current = new Uint8Array(analyser.frequencyBinCount);
+        }
+
+        if (audioContextRef.current.state === 'suspended') {
+          await audioContextRef.current.resume();
+        }
+      } catch (error) {
+        console.warn('初始化频谱分析器失败，将使用模拟动画:', error);
+      }
+    };
+
+    const tick = () => {
+      if (cancelled) return;
+
+      const analyser = analyserRef.current;
+      const data = spectrumDataRef.current;
+      const isActive = !audio.paused && !audio.ended;
+      let nextBars = Array.from({ length: SPECTRUM_BIN_COUNT }, () => SPECTRUM_IDLE_LEVEL);
+
+      if (isActive && analyser && data) {
+        analyser.getByteFrequencyData(data);
+        const usableBins = Math.max(1, Math.floor(data.length * 0.88));
+
+        nextBars = Array.from({ length: SPECTRUM_BIN_COUNT }, (_, index) => {
+          const start = Math.floor((index / SPECTRUM_BIN_COUNT) * usableBins);
+          const end = Math.max(start + 1, Math.floor(((index + 1) / SPECTRUM_BIN_COUNT) * usableBins));
+          let total = 0;
+
+          for (let i = start; i < end; i++) {
+            total += data[i] ?? 0;
+          }
+
+          const average = total / Math.max(1, end - start);
+          const rightBias = index / Math.max(1, SPECTRUM_BIN_COUNT - 1);
+          const highFreqCompensation = 1 + rightBias * 0.85;
+          const floorLift = rightBias * 0.035;
+          return Math.max(
+            SPECTRUM_IDLE_LEVEL,
+            Math.min(1, (average / 255) * highFreqCompensation + floorLift)
+          );
+        });
+      } else if (isActive) {
+        nextBars = Array.from({ length: SPECTRUM_BIN_COUNT }, (_, index) => {
+          const wave =
+            Math.sin(currentTimeRef.current * 5.2 + index * 0.28 + spectrumSeedRef.current) * 0.12 +
+            Math.sin(currentTimeRef.current * 2.6 + index * 0.16) * 0.08 +
+            0.22;
+          return Math.max(SPECTRUM_IDLE_LEVEL, Math.min(0.65, wave));
+        });
+      }
+
+      setSpectrumBars(prev =>
+        nextBars.map((value, index) => {
+          const previous = prev[index] ?? SPECTRUM_IDLE_LEVEL;
+          return previous + (value - previous) * (isActive ? 0.34 : 0.12);
+        })
+      );
+
+      spectrumFrameRef.current = window.requestAnimationFrame(tick);
+    };
+
+    void ensureAnalyser();
+    spectrumFrameRef.current = window.requestAnimationFrame(tick);
+
+    return () => {
+      cancelled = true;
+      if (spectrumFrameRef.current) {
+        window.cancelAnimationFrame(spectrumFrameRef.current);
+        spectrumFrameRef.current = null;
+      }
+    };
+  }, [currentSong]);
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined' && spectrumFrameRef.current) {
+        window.cancelAnimationFrame(spectrumFrameRef.current);
+      }
+      analyserRef.current?.disconnect();
+      mediaSourceRef.current?.disconnect();
+      audioContextRef.current?.close().catch(() => undefined);
+    };
+  }, []);
 
   return (
     <div className="music-theme min-h-screen bg-zinc-950 text-white">
@@ -2344,6 +2572,24 @@ export default function MusicPage() {
                 </div>
                 {/* PiP 歌词按钮 */}
                 <button
+                  onClick={toggleSpectrum}
+                  className={`transition-colors ${
+                    showSpectrum ? 'text-green-500 hover:text-green-400' : 'text-zinc-500 hover:text-white'
+                  }`}
+                  title={showSpectrum ? '隐藏音谱图' : '显示音谱图'}
+                >
+                  <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    {showSpectrum ? (
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 18V9m4 9V6m4 12v-4m4 4V8m4 10V4" />
+                    ) : (
+                      <>
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 18V9m4 9V6m4 12v-4m4 4V8m4 10V4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3l18 18" />
+                      </>
+                    )}
+                  </svg>
+                </button>
+                <button
                   onClick={(e) => {
                     e.stopPropagation();
                     togglePiPLyrics();
@@ -2380,6 +2626,11 @@ export default function MusicPage() {
 
               {/* 进度条 */}
               <div>
+                {showSpectrum && (
+                  <div className="mb-3">
+                    <AudioSpectrumCanvas bars={spectrumBars} />
+                  </div>
+                )}
                 <div className="flex items-center gap-2 text-xs text-zinc-500">
                   <span>{formatTime(currentTime)}</span>
                   <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden relative">
